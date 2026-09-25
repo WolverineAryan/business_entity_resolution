@@ -1,0 +1,31 @@
+# Large datasets and splits
+dataset/
+data/
+scratch/
+model_artifacts/
+team_submission.zip
+
+# Candidate pairs (675 MB exceeds GitHub 100MB limit) and archives
+output/candidate_pairs.tsv
+output/*.zip
+output/*.gz
+output/*baseline*
+output/*compact*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local diagnostic scripts
+benchmark_blocking.py
+create_val_split.py
+inspect_preds.py
+package_submission.py
+scratch_inspect.py
+test_blocking_val.py
+test_precision_filter.py
+train_and_val.py
+tune_advanced.py
+tune_to_98.py
+validate_submission.py
+utils/

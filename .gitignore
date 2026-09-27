@@ -29,3 +29,6 @@ tune_advanced.py
 tune_to_98.py
 validate_submission.py
 utils/
+
+catboost_info/
+

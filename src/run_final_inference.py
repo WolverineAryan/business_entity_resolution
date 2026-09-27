@@ -243,8 +243,22 @@ def main():
     ensemble_data = joblib.load(args.model_path)
     print(f"Loaded ensemble with weights: {ensemble_data['weights']} (Validation F0.5: {ensemble_data['val_score']:.5f})", flush=True)
 
-    # 2. Load test_source1.tsv
-    s1_path = os.path.join(args.test_dir, 'test_source1.tsv')
+    # 2. Auto-Detect and Load test_source1.tsv
+    actual_test_dir = args.test_dir
+    if not os.path.exists(os.path.join(actual_test_dir, 'test_source1.tsv')):
+        # Auto-scan /kaggle/input and common paths
+        found = False
+        search_roots = ['/kaggle/input', 'dataset/test', 'dataset', '.']
+        for sroot in search_roots:
+            if os.path.exists(sroot):
+                for root, dirs, files in os.walk(sroot):
+                    if 'test_source1.tsv' in files:
+                        actual_test_dir = root
+                        found = True
+                        break
+                if found: break
+
+    s1_path = os.path.join(actual_test_dir, 'test_source1.tsv')
     print(f"Loading reference test entities from {s1_path}...", flush=True)
     t0 = time.time()
     s1_full = pd.read_csv(s1_path, sep='\t', dtype=str)
@@ -254,8 +268,8 @@ def main():
     all_matches = {}
     all_candidates = {}
 
-    test_s2_path = os.path.join(args.test_dir, 'test_source2.tsv')
-    test_s3_path = os.path.join(args.test_dir, 'test_source3.tsv')
+    test_s2_path = os.path.join(actual_test_dir, 'test_source2.tsv')
+    test_s3_path = os.path.join(actual_test_dir, 'test_source3.tsv')
 
     for country in ['France', 'India', 'US']:
         s1_c_df = s1_full[s1_full['country'] == country][['entity_id', 'business_name', 'business_address']].copy()

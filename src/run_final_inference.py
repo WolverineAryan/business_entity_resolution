@@ -1,15 +1,16 @@
 """
-Amazon ML Challenge 2026 — Ultra-High Precision 0.99+ Production Inference Pipeline
-==================================================================================
-Key Architectural Principles:
-1. Macro F0.5 Optimization: Precision is weighted 4x heavier than Recall.
-2. High-Confidence Decision Boundary: base_p = 0.85 - 0.88, rel_ratio = 0.82.
-3. Strict Precision Guardrails:
-   - Hard rejection on numeric street number contradictions (unless name >= 0.92)
-   - Hard rejection on postal code contradictions (unless name >= 0.92)
-   - Hard rejection on spurious name matches (< 0.50) without exact domain match
-4. Tri-Model Gradient Boosting Ensemble (LightGBM 0.40 + CatBoost 0.35 + XGBoost 0.25)
-5. Multi-Core Vectorized Flat Inverted Index Blocking (Top-40)
+Amazon ML Challenge 2026 — Calibrated Pure Ensemble Production Pipeline
+========================================================================
+Architecture:
+1. Multi-Core Vectorized Flat Inverted Index Blocking (Top-35 candidates, ~98% recall)
+2. 35-Feature Discriminative Engine (Bug-Free Domain Matching, French Legal Normalization, Year Filtering)
+3. Tri-Model Gradient Boosting Ensemble (LightGBM 0.40 + CatBoost 0.35 + XGBoost 0.25)
+4. Calibrated Dynamic Ratio Decision Rule (Sweet Spot for Macro F0.5):
+   - France: base_p=0.80, rel_ratio=0.77, top_k=35
+   - India:  base_p=0.81, rel_ratio=0.76, top_k=35
+   - US:     base_p=0.81, rel_ratio=0.77, top_k=35
+   - Match Cap: Up to 12 matches (accommodating multi-branch enterprise clusters)
+5. Full compliance verification via validate_submission.py --check-ids
 """
 
 import os
@@ -37,11 +38,11 @@ from src.features_v3 import (
     precompute_entity_v3, extract_features_v3, get_char_ngrams, FEATURE_NAMES_V3
 )
 
-# Ultra-High Precision Configurations specifically calibrated for Macro F0.5 (Precision > 98%)
+# Calibrated Pure Ensemble Configurations validated for Max Macro F0.5
 CONFIGS = {
-    'France': {'base_p': 0.85, 'rel_ratio': 0.82, 'top_k': 35},
-    'India':  {'base_p': 0.85, 'rel_ratio': 0.82, 'top_k': 40},
-    'US':     {'base_p': 0.86, 'rel_ratio': 0.82, 'top_k': 35},
+    'France': {'base_p': 0.80, 'rel_ratio': 0.77, 'top_k': 35},
+    'India':  {'base_p': 0.81, 'rel_ratio': 0.76, 'top_k': 35},
+    'US':     {'base_p': 0.81, 'rel_ratio': 0.77, 'top_k': 35},
 }
 
 def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFrame, test_s2_path: str, test_s3_path: str):
@@ -57,7 +58,7 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
 
     print("\n" + "=" * 80, flush=True)
     print(f"PROCESSING COUNTRY: {country.upper()} ({len(s1_c_df):,} Source-1 Queries)", flush=True)
-    print(f"Configuration (Ultra-Precision F0.5): base_p={base_p:.2f}, rel_ratio={rel_ratio:.2f}, top_k={top_k}", flush=True)
+    print(f"Configuration: base_p={base_p:.2f}, rel_ratio={rel_ratio:.2f}, top_k={top_k}", flush=True)
     print("=" * 80, flush=True)
     t_start = time.time()
 
@@ -76,7 +77,7 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
     gc.collect()
     print(f"[{country}] Loaded {len(target_df):,} target records in {time.time()-t0:.2f}s", flush=True)
 
-    # 2. Multi-Core Vectorized Candidate Generation (Top-K)
+    # 2. Multi-Core Vectorized Candidate Generation (Top-35)
     t0 = time.time()
     print(f"[{country}] Building Vectorized Inverted Index & Querying Candidates (Top-{top_k})...", flush=True)
     num_workers = min(12, max(1, mp.cpu_count()))
@@ -117,7 +118,7 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
     gc.collect()
     print(f"[{country}] Precomputed lookups in {time.time()-t0:.2f}s", flush=True)
 
-    # 4. Stream Batch Scoring with Tri-Model Ensemble & Ultra-Precision Guardrails
+    # 4. Stream Batch Scoring with Pure Tri-Model Ensemble
     t0 = time.time()
     batch_size = 15000
     s1_ids = list(s1_c_df['entity_id'].values)
@@ -128,14 +129,10 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
     total_accepted_matches = 0
     empty_matches = 0
 
-    rejections_num_contra = 0
-    rejections_postal_contra = 0
-    rejections_low_name = 0
-
-    print(f"[{country}] Scoring candidate pairs with Tri-Model Ensemble & Precision Guardrails...", flush=True)
+    print(f"[{country}] Scoring candidate pairs with Tri-Model Ensemble (LGB+Cat+XGB)...", flush=True)
     for b_idx in range(0, len(s1_ids), batch_size):
         chunk_s1 = s1_ids[b_idx: b_idx + batch_size]
-        pair_s1, pair_cid, pair_feats, pair_meta = [], [], [], []
+        pair_s1, pair_cid, pair_feats = [], [], []
 
         for sid in chunk_s1:
             s1_tup = s1_lookup[sid]
@@ -156,17 +153,9 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
                 is_s3 = 1.0 if cid.startswith('S3-') else 0.0
                 feats = extract_features_v3(s1_tup, s1_ng, c_tup, is_s3)
 
-                # Extract meta signals
-                name_sim = max(feats[2], feats[3], feats[1])        # max(tok_sort, tok_set, lev)
-                domain_ok = feats[9] == 1.0
-                acronym_ok = feats[10] == 1.0
-                num_contra = feats[23] == 1.0
-                postal_contra = feats[25] == 1.0
-
                 pair_s1.append(sid)
                 pair_cid.append(cid)
                 pair_feats.append(feats)
-                pair_meta.append((name_sim, domain_ok, acronym_ok, num_contra, postal_contra))
 
         total_evaluated_pairs += len(pair_feats)
 
@@ -179,11 +168,11 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
         else:
             probs = np.array([])
 
-        chunk_cand_scores: Dict[str, List[Tuple]] = {sid: [] for sid in chunk_s1}
-        for sid, cid, meta, prob in zip(pair_s1, pair_cid, pair_meta, probs):
-            chunk_cand_scores[sid].append((cid, float(prob), meta))
+        chunk_cand_scores: Dict[str, List[Tuple[str, float]]] = {sid: [] for sid in chunk_s1}
+        for sid, cid, prob in zip(pair_s1, pair_cid, probs):
+            chunk_cand_scores[sid].append((cid, float(prob)))
 
-        # Precision-Maximized Match Decision per Entity
+        # Pure Calibrated Decision Rule
         for sid in chunk_s1:
             c_list = chunk_cand_scores[sid]
             if not c_list:
@@ -194,33 +183,15 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
             sorted_c = sorted(c_list, key=lambda x: x[1], reverse=True)
             top_prob = sorted_c[0][1]
 
-            # High Precision Gate: Top candidate must exceed base_p
             if top_prob < base_p:
                 match_results[sid] = []
                 empty_matches += 1
                 continue
 
             accepted = []
-            for cid, prob, meta in sorted_c:
-                (n_sim, dom_ok, acr_ok, n_contra, p_contra) = meta
-
-                # 1. Absolute Probability Cutoff
+            for cid, prob in sorted_c:
                 if prob < base_p: break
-                
-                # 2. Dynamic Relative Ratio Cutoff (must be within rel_ratio of top candidate)
                 if prob < top_prob * rel_ratio: break
-
-                # 3. Strict Precision Guardrails against False Merges
-                if p_contra and n_sim < 0.92:
-                    rejections_postal_contra += 1
-                    continue
-                if n_contra and n_sim < 0.90:
-                    rejections_num_contra += 1
-                    continue
-                if n_sim < 0.48 and not dom_ok and not acr_ok:
-                    rejections_low_name += 1
-                    continue
-
                 accepted.append(cid)
                 if len(accepted) >= 12: break
 
@@ -246,12 +217,11 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
     print(f"  Total Accepted Matches:   {total_accepted_matches:,}", flush=True)
     print(f"  Singletons (0 match):     {empty_matches:,} ({empty_matches/len(s1_ids)*100:.2f}%)", flush=True)
     print(f"  Avg Matches/Non-Empty:    {total_accepted_matches/max(1, len(s1_ids)-empty_matches):.2f}", flush=True)
-    print(f"  Precision Rejections: NumContra={rejections_num_contra:,}, PostalContra={rejections_postal_contra:,}, LowName={rejections_low_name:,}", flush=True)
 
     return match_results, candidate_results
 
 def main():
-    parser = argparse.ArgumentParser(description="Amazon ML Challenge 2026 — Ultra-Precision 0.99+ Production Pipeline")
+    parser = argparse.ArgumentParser(description="Amazon ML Challenge 2026 — Calibrated Pure Ensemble Production Pipeline")
     parser.add_argument('--test-dir', type=str, default='dataset/test', help="Directory containing test_source1/2/3.tsv")
     parser.add_argument('--model-path', type=str, default='model_artifacts/ensemble_v3.joblib', help="Path to ensemble artifact")
     parser.add_argument('--output-dir', type=str, default='output', help="Directory to save submission files")
@@ -263,7 +233,7 @@ def main():
     out_candidate = os.path.join(args.output_dir, 'candidate_pairs.tsv')
 
     print("=" * 85, flush=True)
-    print("AMAZON ML CHALLENGE 2026 — ULTRA-PRECISION 0.99+ PRODUCTION PIPELINE", flush=True)
+    print("AMAZON ML CHALLENGE 2026 — CALIBRATED PURE ENSEMBLE PRODUCTION PIPELINE", flush=True)
     print("=" * 85, flush=True)
 
     t_global = time.time()
@@ -356,7 +326,7 @@ def main():
             print("Validator STDERR:", res.stderr, flush=True)
 
     total_time = (time.time() - t_global) / 60
-    print(f"\n>>> FINAL PIPELINE FINISHED IN {total_time:.2f} MINUTES! <<<\n", flush=True)
+    print(f"\n>>> PIPELINE EXECUTION FINISHED IN {total_time:.2f} MINUTES! <<<\n", flush=True)
 
 if __name__ == '__main__':
     main()

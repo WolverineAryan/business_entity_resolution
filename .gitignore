@@ -2,7 +2,8 @@
 dataset/
 data/
 scratch/
-model_artifacts/
+model_artifacts/*
+!model_artifacts/ensemble_v3.joblib
 team_submission.zip
 
 # Candidate pairs (675 MB exceeds GitHub 100MB limit) and archives

@@ -222,7 +222,7 @@ def run_country_pipeline(country: str, ensemble_data: dict, s1_c_df: pd.DataFram
                     continue
 
                 accepted.append(cid)
-                if len(accepted) >= 8: break
+                if len(accepted) >= 12: break
 
             if not accepted:
                 match_results[sid] = []
